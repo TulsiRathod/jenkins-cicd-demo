@@ -97,7 +97,11 @@ pipeline {
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: '*/target/surefire-reports/*.xml'
+                    script {
+                        // only this build's services (other folders may hold old reports)
+                        def reports = selected.collect { svc -> "${svc}/target/surefire-reports/*.xml" }.join(',')
+                        junit allowEmptyResults: true, testResults: reports
+                    }
                 }
             }
         }
