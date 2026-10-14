@@ -1,6 +1,6 @@
 // =====================================================================
 //  CI/CD pipeline for all services in this repo
-//  Developer pushes -> TEST -> PACKAGE -> VERSION -> STAGING -> APPROVAL -> PROD
+//  Developer pushes -> BUILD -> UNIT TEST -> DEPLOY
 //
 //  Parameters:
 //    SERVICE - empty = build ALL services, or one service name
@@ -8,10 +8,10 @@
 // =====================================================================
 import groovy.transform.Field
 
-// Every service in this repo: folder name -> host ports per environment
+// Every service in this repo: folder name -> host port
 @Field final Map SERVICES = [
-    'inventory-service': [staging: 8081, production: 8082],
-    'order-service'    : [staging: 8083, production: 8084],
+    'inventory-service': 8081,
+    'order-service'    : 8082,
 ]
 
 // Filled in during the run
@@ -47,8 +47,8 @@ pipeline {
 
     stages {
 
-        // ---------- 0. WHAT TO BUILD: branch + services ----------
-        stage('Checkout') {
+        // ---------- 1. BUILD: checkout, version, compile + package the jar ----------
+        stage('Build') {
             steps {
                 script {
                     def branch = params.BRANCH?.trim() ?: 'main'
@@ -65,33 +65,29 @@ pipeline {
                         error "Unknown service '${requested}'. Valid: ${SERVICES.keySet().join(', ')} (or empty for all)"
                     }
                     currentBuild.displayName = "#${env.BUILD_NUMBER} ${requested ?: 'all services'} @ ${branch}"
-                    echo "Branch: ${branch} | Services: ${selected.join(', ')}"
-                }
-            }
-        }
 
-        // ---------- 1. VERSION: every build gets a unique, traceable version ----------
-        stage('Version') {
-            steps {
-                script {
+                    // Version = VERSION file + build number + git commit, e.g. 1.0.7-a1b2c3d
                     def sha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     for (svc in selected) {
-                        def base = readFile("${svc}/VERSION").trim()
-                        versions[svc] = "${base}.${env.BUILD_NUMBER}-${sha}".toString()
-                        echo "${svc} will be version ${versions[svc]}"
+                        versions[svc] = "${readFile("${svc}/VERSION").trim()}.${env.BUILD_NUMBER}-${sha}".toString()
+                        echo "Building ${svc} v${versions[svc]}"
+                        dir(svc) {
+                            sh "mvn -B -Drevision=${versions[svc]} clean package -DskipTests"
+                        }
+                        archiveArtifacts artifacts: "${svc}/target/*.jar", fingerprint: true
                     }
                     currentBuild.description = versions.collect { svc, v -> "${svc} v${v}" }.join(' | ')
                 }
             }
         }
 
-        // ---------- 2. TEST: compile + unit & API tests ----------
-        stage('Unit Tests') {
+        // ---------- 2. UNIT TEST: tests + coverage gate ----------
+        stage('Unit Test') {
             steps {
                 script {
                     for (svc in selected) {
                         dir(svc) {
-                            sh "mvn -B -Drevision=${versions[svc]} clean test"
+                            sh "mvn -B -Drevision=${versions[svc]} test jacoco:check@coverage-check"
                         }
                     }
                 }
@@ -102,25 +98,6 @@ pipeline {
                         // only this build's services (other folders may hold old reports)
                         def reports = selected.collect { svc -> "${svc}/target/surefire-reports/*.xml" }.join(',')
                         junit allowEmptyResults: true, testResults: reports
-                    }
-                }
-            }
-        }
-
-        // ---------- 3. QUALITY GATE: fail if coverage is too low ----------
-        stage('Code Coverage Gate') {
-            steps {
-                script {
-                    for (svc in selected) {
-                        dir(svc) {
-                            sh 'mvn -B jacoco:check@coverage-check'
-                        }
-                    }
-                }
-            }
-            post {
-                always {
-                    script {
                         for (svc in selected) {
                             recordCoverage(id: "coverage-${svc}", name: "Coverage: ${svc}",
                                            tools: [[parser: 'JACOCO', pattern: "${svc}/target/site/jacoco/jacoco.xml"]],
@@ -131,57 +108,16 @@ pipeline {
             }
         }
 
-        // ---------- 4. PACKAGE: versioned jar + versioned Docker image ----------
-        stage('Package') {
+        // ---------- 3. DEPLOY: Docker image + run container + smoke test ----------
+        stage('Deploy') {
             steps {
                 script {
                     for (svc in selected) {
-                        dir(svc) {
-                            sh "mvn -B -Drevision=${versions[svc]} package -DskipTests"
-                        }
-                        archiveArtifacts artifacts: "${svc}/target/*.jar", fingerprint: true
                         sh "docker build -t ${svc}:${versions[svc]} -t ${svc}:latest ${svc}"
+                        deployTo(svc, versions[svc])
+                        smokeTest(svc, versions[svc])
                     }
-                }
-            }
-        }
-
-        // ---------- 5. DEPLOY TO STAGING + automatic smoke test ----------
-        stage('Deploy to Staging') {
-            steps {
-                script {
-                    for (svc in selected) {
-                        deployTo(svc, 'staging', versions[svc])
-                        smokeTest(svc, 'staging', versions[svc])
-                    }
-                }
-            }
-        }
-
-        // ---------- 6. HUMAN APPROVAL GATE ----------
-        stage('Approval') {
-            steps {
-                script {
-                    def summary = selected.collect { svc ->
-                        "${svc} v${versions[svc]} (staging: http://localhost:${SERVICES[svc].staging})"
-                    }.join('\n')
-                    timeout(time: 30, unit: 'MINUTES') {
-                        input message: "Staging looks good. Deploy to PRODUCTION?\n${summary}",
-                              ok: 'Deploy to Production'
-                    }
-                }
-            }
-        }
-
-        // ---------- 7. DEPLOY TO PRODUCTION ----------
-        stage('Deploy to Production') {
-            steps {
-                script {
-                    for (svc in selected) {
-                        deployTo(svc, 'production', versions[svc])
-                        smokeTest(svc, 'production', versions[svc])
-                    }
-                    currentBuild.description = 'In production: ' + currentBuild.description
+                    currentBuild.description = 'Deployed: ' + currentBuild.description
                 }
             }
         }
@@ -192,35 +128,35 @@ pipeline {
             echo "Pipeline finished successfully for: ${selected.join(', ')}"
         }
         failure {
-            echo 'Pipeline FAILED - nothing after the failed stage was run, production is untouched.'
+            echo 'Pipeline FAILED - nothing after the failed stage was run, the running version is untouched.'
         }
     }
 }
 
-// Replace the running container of a service in an environment with the given image version
-def deployTo(String svc, String envName, String version) {
-    def port = SERVICES[svc][envName]
-    echo "Deploying ${svc} v${version} to ${envName} (http://localhost:${port})"
+// Replace the running container of a service with the given image version
+def deployTo(String svc, String version) {
+    def port = SERVICES[svc]
+    echo "Deploying ${svc} v${version} (http://localhost:${port})"
     sh """
         docker network inspect ${env.DOCKER_NETWORK} > /dev/null 2>&1 || docker network create ${env.DOCKER_NETWORK}
-        docker rm -f ${svc}-${envName} > /dev/null 2>&1 || true
-        docker run -d --name ${svc}-${envName} \
+        docker rm -f ${svc} > /dev/null 2>&1 || true
+        docker run -d --name ${svc} \
             --network ${env.DOCKER_NETWORK} \
             -p ${port}:8080 \
-            -e APP_ENV=${envName} \
+            -e APP_ENV=production \
             --restart unless-stopped \
             ${svc}:${version}
     """
 }
 
 // Wait until the service is healthy and confirm the expected version is running
-def smokeTest(String svc, String envName, String version) {
-    def url = "http://${svc}-${envName}:8080"
+def smokeTest(String svc, String version) {
+    def url = "http://${svc}:8080"
     retry(20) {
         sleep 3
         sh "curl -fsS ${url}/actuator/health | grep -q UP"
     }
     sh "curl -fsS ${url}/version"
     sh "curl -fsS ${url}/version | grep -q '${version}'"
-    echo "Smoke test passed: ${svc} in ${envName} is running v${version}"
+    echo "Smoke test passed: ${svc} is running v${version}"
 }
