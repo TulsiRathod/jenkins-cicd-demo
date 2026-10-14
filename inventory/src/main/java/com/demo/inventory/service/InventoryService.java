@@ -46,4 +46,12 @@ public class InventoryService {
         }
         return repository.save(product.withQuantity(product.quantity() - quantity));
     }
+
+    /** Products that need re-ordering. */
+    public List<Product> lowStock(int threshold) {
+        return repository.findAll().stream()
+                .filter(p -> p.quantity() < threshold)
+                .sorted(Comparator.comparing(Product::sku))
+                .toList();
+    }
 }

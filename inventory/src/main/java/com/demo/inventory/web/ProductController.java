@@ -42,4 +42,9 @@ public class ProductController {
     public Map<String, BigDecimal> inventoryValue() {
         return Map.of("totalValue", service.totalInventoryValue());
     }
+
+    @GetMapping("/products/low-stock")
+    public List<Product> lowStock(@RequestParam(defaultValue = "5") int threshold) {
+        return service.lowStock(threshold);
+    }
 }

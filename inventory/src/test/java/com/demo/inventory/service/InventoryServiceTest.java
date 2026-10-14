@@ -62,4 +62,11 @@ class InventoryServiceTest {
         assertThatThrownBy(() -> service.reserve("LAP-001", 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void findsLowStockProducts() {
+        assertThat(service.lowStock(5))
+                .extracting(Product::sku)
+                .containsExactly("HDP-005", "KEY-003");
+    }
 }
