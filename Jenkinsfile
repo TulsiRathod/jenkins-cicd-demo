@@ -2,7 +2,9 @@
 //  CI/CD pipeline for all services in this repo
 //  Developer pushes -> TEST -> PACKAGE -> VERSION -> STAGING -> APPROVAL -> PROD
 //
-//  SERVICE parameter: empty = build ALL services, or one service name
+//  Parameters:
+//    SERVICE - empty = build ALL services, or one service name
+//    BRANCH  - Git branch to build (default: main)
 // =====================================================================
 import groovy.transform.Field
 
@@ -22,10 +24,8 @@ pipeline {
     parameters {
         string(name: 'SERVICE', defaultValue: '',
                description: 'Service to build: inventory-service or order-service. Leave EMPTY to build ALL services.')
-        choice(name: 'ACTION', choices: ['deploy', 'rollback'],
-               description: 'deploy = normal CI/CD run | rollback = put an older version back in production (needs SERVICE)')
-        string(name: 'ROLLBACK_VERSION', defaultValue: '',
-               description: 'Only for rollback, e.g. 1.0.3-a1b2c3d (see build descriptions in the history)')
+        string(name: 'BRANCH', defaultValue: 'main',
+               description: 'Git branch to build')
     }
 
     // Check GitHub for new commits every minute (no public URL / webhook needed)
@@ -34,6 +34,7 @@ pipeline {
     }
 
     options {
+        skipDefaultCheckout()     // we check out the BRANCH parameter ourselves
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
@@ -46,10 +47,15 @@ pipeline {
 
     stages {
 
-        // ---------- 0. WHICH SERVICES? ----------
-        stage('Select Services') {
+        // ---------- 0. WHAT TO BUILD: branch + services ----------
+        stage('Checkout') {
             steps {
                 script {
+                    def branch = params.BRANCH?.trim() ?: 'main'
+                    checkout([$class: 'GitSCM',
+                              branches: [[name: "*/${branch}"]],
+                              userRemoteConfigs: scm.userRemoteConfigs])
+
                     def requested = params.SERVICE?.trim()
                     if (!requested) {
                         selected = SERVICES.keySet() as List
@@ -58,17 +64,14 @@ pipeline {
                     } else {
                         error "Unknown service '${requested}'. Valid: ${SERVICES.keySet().join(', ')} (or empty for all)"
                     }
-                    if (params.ACTION == 'rollback' && selected.size() != 1) {
-                        error 'Rollback needs exactly one SERVICE name'
-                    }
-                    echo "Services in this build: ${selected.join(', ')}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${requested ?: 'all services'} @ ${branch}"
+                    echo "Branch: ${branch} | Services: ${selected.join(', ')}"
                 }
             }
         }
 
         // ---------- 1. VERSION: every build gets a unique, traceable version ----------
         stage('Version') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     def sha = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
@@ -77,7 +80,6 @@ pipeline {
                         versions[svc] = "${base}.${env.BUILD_NUMBER}-${sha}".toString()
                         echo "${svc} will be version ${versions[svc]}"
                     }
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${params.SERVICE?.trim() ?: 'all services'}"
                     currentBuild.description = versions.collect { svc, v -> "${svc} v${v}" }.join(' | ')
                 }
             }
@@ -85,7 +87,6 @@ pipeline {
 
         // ---------- 2. TEST: compile + unit & API tests ----------
         stage('Unit Tests') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     for (svc in selected) {
@@ -108,7 +109,6 @@ pipeline {
 
         // ---------- 3. QUALITY GATE: fail if coverage is too low ----------
         stage('Code Coverage Gate') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     for (svc in selected) {
@@ -133,7 +133,6 @@ pipeline {
 
         // ---------- 4. PACKAGE: versioned jar + versioned Docker image ----------
         stage('Package') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     for (svc in selected) {
@@ -149,7 +148,6 @@ pipeline {
 
         // ---------- 5. DEPLOY TO STAGING + automatic smoke test ----------
         stage('Deploy to Staging') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     for (svc in selected) {
@@ -162,7 +160,6 @@ pipeline {
 
         // ---------- 6. HUMAN APPROVAL GATE ----------
         stage('Approval') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     def summary = selected.collect { svc ->
@@ -178,7 +175,6 @@ pipeline {
 
         // ---------- 7. DEPLOY TO PRODUCTION ----------
         stage('Deploy to Production') {
-            when { expression { params.ACTION == 'deploy' } }
             steps {
                 script {
                     for (svc in selected) {
@@ -186,25 +182,6 @@ pipeline {
                         smokeTest(svc, 'production', versions[svc])
                     }
                     currentBuild.description = 'In production: ' + currentBuild.description
-                }
-            }
-        }
-
-        // ---------- ROLLBACK: redeploy an image we already built and tested ----------
-        stage('Rollback Production') {
-            when { expression { params.ACTION == 'rollback' } }
-            steps {
-                script {
-                    def svc = selected[0]
-                    def version = params.ROLLBACK_VERSION.trim()
-                    if (!version) {
-                        error 'ROLLBACK_VERSION is required for a rollback'
-                    }
-                    sh "docker image inspect ${svc}:${version} > /dev/null"
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} ROLLBACK ${svc}"
-                    deployTo(svc, 'production', version)
-                    smokeTest(svc, 'production', version)
-                    currentBuild.description = "In production: ${svc} v${version} (rollback)"
                 }
             }
         }
