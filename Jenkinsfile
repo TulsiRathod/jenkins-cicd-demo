@@ -10,9 +10,11 @@
 import groovy.transform.Field
 
 // Every service in this repo: folder name -> host port per environment
+// (built in this order: backends first, then the frontend that calls them)
 @Field final Map SERVICES = [
     'inventory': [dev: 8081, uat: 8083, prod: 8085],
     'order':     [dev: 8082, uat: 8084, prod: 8086],
+    'frontend':  [dev: 9001, uat: 9002, prod: 9003],
 ]
 
 // Filled in during the run
@@ -24,7 +26,7 @@ pipeline {
 
     parameters {
         string(name: 'SERVICE', defaultValue: '',
-               description: 'Service to build: inventory or order. Leave EMPTY to build ALL services.')
+               description: 'Service to build: inventory, order or frontend. Leave EMPTY to build ALL services.')
         string(name: 'BRANCH', defaultValue: 'main',
                description: 'Git branch to build')
         choice(name: 'ENV', choices: ['dev', 'uat', 'prod'],

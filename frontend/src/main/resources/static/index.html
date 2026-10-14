@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store App</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">S</span>
+    <span>Store App</span>
+    <span id="env" class="env env-unknown">…</span>
+  </div>
+  <div class="versions" id="versions">
+    <span class="chip">frontend <b id="v-frontend">…</b></span>
+    <span class="chip">inventory <b id="v-inventory">…</b></span>
+    <span class="chip">order <b id="v-order">…</b></span>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+
+  <section class="tiles">
+    <div class="tile"><div class="tile-label">Products</div><div class="tile-value" id="t-products">–</div></div>
+    <div class="tile"><div class="tile-label">Inventory value</div><div class="tile-value" id="t-value">–</div></div>
+    <div class="tile"><div class="tile-label">Open orders</div><div class="tile-value" id="t-orders">–</div></div>
+    <div class="tile"><div class="tile-label">Revenue</div><div class="tile-value" id="t-revenue">–</div></div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-head">
+        <h2>Products</h2>
+        <span class="muted">from the <b>inventory</b> service</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>SKU</th><th>Name</th><th class="num">Stock</th><th class="num">Price</th></tr></thead>
+          <tbody id="products"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Low stock</h2>
+        <span class="muted">needs re-ordering (&lt; 5)</span>
+      </div>
+      <div id="low-stock" class="muted">Loading…</div>
+    </section>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <div class="card-head">
+        <h2>Orders</h2>
+        <span class="muted">from the <b>order</b> service</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Product</th><th class="num">Qty</th><th class="num">Total</th><th>Status</th><th></th></tr></thead>
+          <tbody id="orders"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Place an order</h2></div>
+      <form id="order-form">
+        <label>Customer <input id="f-customer" required placeholder="e.g. carol"></label>
+        <label>Product <select id="f-sku" required></select></label>
+        <label>Quantity <input id="f-qty" type="number" min="1" value="1" required></label>
+        <button type="submit">Place order</button>
+        <div id="form-msg" class="form-msg" hidden></div>
+      </form>
+      <p class="muted small">Placing an order first reserves the stock in <b>inventory</b>, then creates the order in <b>order</b>.</p>
+    </section>
+  </div>
+</main>
+
+<footer>Deployed by Jenkins · Build → Unit Test → Deploy</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
