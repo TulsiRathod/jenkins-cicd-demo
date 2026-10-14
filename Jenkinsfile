@@ -11,20 +11,20 @@ import groovy.transform.Field
 
 // Every service in this repo: folder name -> host port per environment
 @Field final Map SERVICES = [
-    'inventory-service': [dev: 8081, uat: 8083, prod: 8085],
-    'order-service'    : [dev: 8082, uat: 8084, prod: 8086],
+    'inventory': [dev: 8081, uat: 8083, prod: 8085],
+    'order':     [dev: 8082, uat: 8084, prod: 8086],
 ]
 
 // Filled in during the run
 @Field List selected = []     // services this build works on
-@Field Map versions = [:]     // service -> version, e.g. 'order-service' -> '1.0.7-a1b2c3d'
+@Field Map versions = [:]     // service -> version, e.g. 'order' -> '1.0.7-a1b2c3d'
 
 pipeline {
     agent any
 
     parameters {
         string(name: 'SERVICE', defaultValue: '',
-               description: 'Service to build: inventory-service or order-service. Leave EMPTY to build ALL services.')
+               description: 'Service to build: inventory or order. Leave EMPTY to build ALL services.')
         string(name: 'BRANCH', defaultValue: 'main',
                description: 'Git branch to build')
         choice(name: 'ENV', choices: ['dev', 'uat', 'prod'],
