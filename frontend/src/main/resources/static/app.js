@@ -166,10 +166,25 @@ $('order-form').addEventListener('submit', async (e) => {
   refreshData();
 });
 
+// ---------- payment provider (key comes from Jenkins Credentials) ----------
+async function loadPaymentStatus() {
+  const { ok, body } = await api('/api/orders/payment-status');
+  const el = $('payment');
+  if (!ok) { el.hidden = true; return; }        // older order version without this endpoint
+  el.hidden = false;
+  if (body.configured) {
+    el.textContent = `Payment provider: connected (key …${body.keyEndsWith})`;
+    el.className = 'payment ok';
+  } else {
+    el.textContent = 'Payment provider: NOT configured';
+    el.className = 'payment missing';
+  }
+}
+
 // ---------- refresh ----------
 async function refreshData() {
   const [productsOk, ordersOk] = await Promise.all([loadProducts(), loadOrders()]);
-  await Promise.all([loadInventoryValue(), loadLowStock(), loadRevenue()]);
+  await Promise.all([loadInventoryValue(), loadLowStock(), loadRevenue(), loadPaymentStatus()]);
   const down = [!productsOk && 'inventory', !ordersOk && 'order'].filter(Boolean);
   showBanner(down.length ? `The ${down.join(' and ')} service is not reachable in this environment.` : '');
 }

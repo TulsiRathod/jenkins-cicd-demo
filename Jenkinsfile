@@ -17,6 +17,12 @@ import groovy.transform.Field
     'frontend':  [dev: 9001, uat: 9002, prod: 9003],
 ]
 
+// Secrets a service gets at deploy time: env variable -> Jenkins credentials ID
+// (the value lives in Jenkins > Credentials, never in Git)
+@Field final Map SECRETS = [
+    'order': ['PAYMENT_API_KEY': 'payment-api-key'],
+]
+
 // Filled in during the run
 @Field List selected = []     // services this build works on
 @Field Map versions = [:]     // service -> version, e.g. 'order' -> '1.0.7-a1b2c3d'
@@ -119,8 +125,7 @@ pipeline {
                 script {
                     for (svc in selected) {
                         sh "docker build -t ${svc}:${versions[svc]} -t ${svc}:latest ${svc}"
-                        deployTo(svc, targetEnv(), versions[svc])
-                        smokeTest(svc, targetEnv(), versions[svc])
+                        deployWithRollback(svc, targetEnv(), versions[svc])
                     }
                     currentBuild.description = "Deployed to ${targetEnv()}: " + currentBuild.description
                 }
@@ -143,30 +148,78 @@ def targetEnv() {
     return params.ENV ?: 'dev'
 }
 
+// Deploy a new version; if it does not come up healthy, put the previous version back
+def deployWithRollback(String svc, String envName, String version) {
+    def container = "${svc}-${envName}"
+    def previous = sh(script: "docker inspect -f '{{.Config.Image}}' ${container} 2>/dev/null || true",
+                      returnStdout: true).trim()     // e.g. inventory:1.0.13-aa67115, empty on first deploy
+
+    deployTo(svc, envName, version)
+    try {
+        smokeTest(svc, envName, version)
+    } catch (err) {
+        if (!previous || previous == "${svc}:${version}") {
+            throw err       // nothing to roll back to
+        }
+        def previousVersion = previous.substring(previous.indexOf(':') + 1)
+        echo "ROLLBACK: ${svc} v${version} is not healthy - putting v${previousVersion} back"
+        deployTo(svc, envName, previousVersion)
+        smokeTest(svc, envName, previousVersion)
+        currentBuild.description = "ROLLED BACK ${svc} in ${envName} to v${previousVersion} | ${currentBuild.description ?: ''}"
+        error "Deploy of ${svc} v${version} failed - rolled back to v${previousVersion}"
+    }
+}
+
 // Replace the running container of a service in an environment with the given image version
 def deployTo(String svc, String envName, String version) {
     def port = SERVICES[svc][envName]
+
+    // Secrets from Jenkins Credentials -> environment variables; Jenkins masks them as **** in the log
+    def secrets = SECRETS[svc] ?: [:]
+    def bindings = []
+    def secretFlags = ''
+    for (name in secrets.keySet()) {
+        bindings << string(credentialsId: secrets[name], variable: name)
+        secretFlags += " -e ${name}=\"\$${name}\""
+    }
+
     echo "Deploying ${svc} v${version} to ${envName} (http://localhost:${port})"
-    sh """
-        docker network inspect ${env.DOCKER_NETWORK} > /dev/null 2>&1 || docker network create ${env.DOCKER_NETWORK}
-        docker rm -f ${svc}-${envName} > /dev/null 2>&1 || true
-        docker run -d --name ${svc}-${envName} \
-            --network ${env.DOCKER_NETWORK} \
-            -p ${port}:8080 \
-            -e APP_ENV=${envName} \
-            --restart unless-stopped \
-            ${svc}:${version}
-    """
+    withCredentials(bindings) {
+        sh """
+            docker network inspect ${env.DOCKER_NETWORK} > /dev/null 2>&1 || docker network create ${env.DOCKER_NETWORK}
+            docker rm -f ${svc}-${envName} > /dev/null 2>&1 || true
+            docker run -d --name ${svc}-${envName} \
+                --network ${env.DOCKER_NETWORK} \
+                -p ${port}:8080 \
+                -e APP_ENV=${envName}${secretFlags} \
+                --restart unless-stopped \
+                ${svc}:${version}
+        """
+    }
 }
 
-// Wait until the service is healthy and confirm the expected version is running
+// Wait until the service is healthy and confirm the expected version is running.
+// Fails fast if the container crashes on startup, and prints its last log lines.
 def smokeTest(String svc, String envName, String version) {
-    def url = "http://${svc}-${envName}:8080"
-    retry(20) {
-        sleep 3
-        sh "curl -fsS ${url}/actuator/health | grep -q UP"
+    withEnv(["CONTAINER=${svc}-${envName}", "EXPECTED=${version}"]) {
+        sh '''
+            set +x
+            echo "Smoke test: waiting for $CONTAINER to be healthy..."
+            for i in $(seq 1 30); do
+                if curl -fsS "http://$CONTAINER:8080/actuator/health" 2>/dev/null | grep -q UP; then
+                    curl -fsS "http://$CONTAINER:8080/version"; echo
+                    curl -fsS "http://$CONTAINER:8080/version" | grep -q "$EXPECTED" && exit 0
+                    echo "Wrong version running (expected $EXPECTED)"; exit 1
+                fi
+                if [ "$(docker inspect -f '{{.RestartCount}}' "$CONTAINER")" -gt 0 ]; then
+                    echo "$CONTAINER CRASHED on startup. Last log lines:"
+                    docker logs --tail 15 "$CONTAINER" 2>&1
+                    exit 1
+                fi
+                sleep 2
+            done
+            echo "$CONTAINER not healthy after 60 seconds"; exit 1
+        '''
     }
-    sh "curl -fsS ${url}/version"
-    sh "curl -fsS ${url}/version | grep -q '${version}'"
     echo "Smoke test passed: ${svc} in ${envName} is running v${version}"
 }

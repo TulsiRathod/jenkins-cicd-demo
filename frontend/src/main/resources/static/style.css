@@ -118,4 +118,10 @@ button.link { padding: 0; background: none; color: var(--bad); font-weight: 500;
 .form-msg.ok { background: #e3f5ec; color: var(--ok); }
 .form-msg.err { background: #fbe5e3; color: var(--bad); }
 
-footer { text-align: center; color: var(--muted); font-size: 12px; padding: 8px 16px 24px; }
+footer {
+  display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: center; align-items: center;
+  color: var(--muted); font-size: 12px; padding: 8px 16px 24px;
+}
+.payment { padding: 3px 10px; border-radius: 999px; font-weight: 600; }
+.payment.ok { background: #e3f5ec; color: var(--ok); }
+.payment.missing { background: #fbe5e3; color: var(--bad); }
